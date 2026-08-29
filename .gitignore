@@ -8,6 +8,7 @@ target/
 .vscode/
 *.class
 *.jar
+!libs/npcgui-1.0.4.jar
 *.war
 *.zip
 *.tar

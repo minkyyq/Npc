@@ -5,10 +5,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.client.event.RenderGuiOverlayEvent;
-import net.minecraftforge.client.event.RenderHandEvent;
 import net.minecraftforge.client.event.ViewportEvent;
-import net.minecraftforge.client.gui.overlay.VanillaGuiOverlay;
 import net.minecraftforge.event.TickEvent;
 
 public final class ClientCameraController {
@@ -88,23 +85,6 @@ public final class ClientCameraController {
     public static void onComputeFov(ViewportEvent.ComputeFov event) {
         if (state != null) {
             event.setFOV(55.0D);
-        }
-    }
-
-    public static void onRenderHand(RenderHandEvent event) {
-        if (state != null) {
-            event.setCanceled(true);
-        }
-    }
-
-    public static void onRenderGuiOverlay(RenderGuiOverlayEvent.Pre event) {
-        if (state == null) {
-            return;
-        }
-
-        if (!event.getOverlay().id().equals(VanillaGuiOverlay.CHAT_PANEL.id())
-                && !event.getOverlay().id().equals(VanillaGuiOverlay.SUBTITLES.id())) {
-            event.setCanceled(true);
         }
     }
 

@@ -11,17 +11,27 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public final class StoryDirector {
     public static final StoryDirector INSTANCE = new StoryDirector();
+    private static final int GAME_MODE_RESTORE_GRACE_TICKS = 2;
+
+    private final Map<UUID, GameType> previousGameModes = new HashMap<>();
+    private final Map<UUID, Integer> pendingGameModeRestores = new HashMap<>();
     private int dialogueCooldownTicks;
 
     private static final List<DialogueStep> DIALOGUE = List.of(
@@ -69,6 +79,8 @@ public final class StoryDirector {
             dialogueCooldownTicks--;
         }
 
+        updatePendingGameModeRestores(level);
+
         StorySavedData data = StorySavedData.get(level);
         if (data.getPhase() == StoryPhase.APPROACHING) {
             updateApproach(level, data);
@@ -85,6 +97,13 @@ public final class StoryDirector {
         }
     }
 
+    @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            restorePreviousGameMode(player);
+        }
+    }
+
     private void spawnScene(ServerLevel level, StorySavedData data, ServerPlayer viewer) {
         removeNearbyStoryNpcs(level);
 
@@ -96,14 +115,14 @@ public final class StoryDirector {
             first.discard();
             second.discard();
             data.reset();
-            ModNetworking.sendCameraCue(viewer, CameraCuePacket.clear());
+            sendSceneCameraCue(viewer, CameraCuePacket.clear());
             return;
         }
 
         data.setNpcIds(first.getUUID(), second.getUUID());
         data.setDialogueIndex(0);
         data.setPhase(StoryPhase.SPAWNED);
-        ModNetworking.sendCameraCue(
+        sendSceneCameraCue(
                 viewer,
                 CameraCuePacket.staticShot(0.0D, groundY + 1.15D, 0.5D)
         );
@@ -145,7 +164,7 @@ public final class StoryDirector {
         data.setPhase(StoryPhase.APPROACHING);
 
         double groundY = sceneGroundY(level);
-        ModNetworking.sendCameraCue(
+        sendSceneCameraCue(
                 viewer,
                 CameraCuePacket.dolly(0.0D, groundY + 1.15D, 0.5D, 80)
         );
@@ -212,14 +231,14 @@ public final class StoryDirector {
         NpcPair pair = resolvePair(level, data);
         if (pair == null) {
             data.reset();
-            ModNetworking.sendCameraCue(viewer, CameraCuePacket.clear());
+            sendSceneCameraCue(viewer, CameraCuePacket.clear());
             return;
         }
 
         int index = data.getDialogueIndex();
         if (index >= DIALOGUE.size()) {
             data.setPhase(StoryPhase.COMPLETE);
-            ModNetworking.sendCameraCue(viewer, CameraCuePacket.clear());
+            sendSceneCameraCue(viewer, CameraCuePacket.clear());
             return;
         }
 
@@ -247,7 +266,7 @@ public final class StoryDirector {
                         speakerEyes.z,
                         20
                 );
-        ModNetworking.sendCameraCue(viewer, cameraCue);
+        sendSceneCameraCue(viewer, cameraCue);
         broadcastDialogue(level, speaker.getNpcRole().displayName(), step.text());
 
         data.setDialogueIndex(nextIndex);
@@ -303,7 +322,68 @@ public final class StoryDirector {
     }
 
     private void clearCamera(ServerLevel level) {
-        level.players().forEach(player -> ModNetworking.sendCameraCue(player, CameraCuePacket.clear()));
+        level.players().forEach(player -> sendSceneCameraCue(player, CameraCuePacket.clear()));
+    }
+
+    private void sendSceneCameraCue(ServerPlayer viewer, CameraCuePacket cue) {
+        if (cue.mode() == CameraCuePacket.Mode.CLEAR) {
+            ModNetworking.sendCameraCue(viewer, cue);
+            restorePreviousGameMode(viewer);
+            return;
+        }
+
+        enterSpectatorMode(viewer);
+        ModNetworking.sendCameraCue(viewer, cue);
+
+        if (cue.mode() == CameraCuePacket.Mode.TURN_AND_CLEAR) {
+            scheduleGameModeRestore(viewer, cue.durationTicks() + GAME_MODE_RESTORE_GRACE_TICKS);
+        }
+    }
+
+    private void enterSpectatorMode(ServerPlayer viewer) {
+        UUID playerId = viewer.getUUID();
+        previousGameModes.computeIfAbsent(playerId, ignored -> viewer.gameMode.getGameModeForPlayer());
+        pendingGameModeRestores.remove(playerId);
+
+        if (viewer.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
+            viewer.setGameMode(GameType.SPECTATOR);
+        }
+    }
+
+    private void scheduleGameModeRestore(ServerPlayer viewer, int delayTicks) {
+        pendingGameModeRestores.put(viewer.getUUID(), Math.max(1, delayTicks));
+    }
+
+    private void updatePendingGameModeRestores(ServerLevel level) {
+        Iterator<Map.Entry<UUID, Integer>> iterator = pendingGameModeRestores.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Integer> entry = iterator.next();
+            int ticksLeft = entry.getValue() - 1;
+            if (ticksLeft > 0) {
+                entry.setValue(ticksLeft);
+                continue;
+            }
+
+            UUID playerId = entry.getKey();
+            iterator.remove();
+
+            ServerPlayer player = level.getServer().getPlayerList().getPlayer(playerId);
+            if (player != null) {
+                restorePreviousGameMode(player);
+            } else {
+                previousGameModes.remove(playerId);
+            }
+        }
+    }
+
+    private void restorePreviousGameMode(ServerPlayer player) {
+        UUID playerId = player.getUUID();
+        GameType previousGameMode = previousGameModes.remove(playerId);
+        pendingGameModeRestores.remove(playerId);
+
+        if (previousGameMode != null && player.gameMode.getGameModeForPlayer() == GameType.SPECTATOR) {
+            player.setGameMode(previousGameMode);
+        }
     }
 
     private double sceneGroundY(ServerLevel level) {
@@ -311,7 +391,7 @@ public final class StoryDirector {
     }
 
     private void broadcastDialogue(ServerLevel level, String speaker, String text) {
-        Component message = Component.literal("[" + speaker + "]: " + text);
+        Component message = Component.literal("[" + speaker + "] " + text);
         level.getServer().getPlayerList().broadcastSystemMessage(message, false);
     }
 

@@ -22,7 +22,5 @@ public final class ClientBootstrap {
         MinecraftForge.EVENT_BUS.addListener(ClientCameraController::onClientTick);
         MinecraftForge.EVENT_BUS.addListener(ClientCameraController::onCameraAngles);
         MinecraftForge.EVENT_BUS.addListener(ClientCameraController::onComputeFov);
-        MinecraftForge.EVENT_BUS.addListener(ClientCameraController::onRenderHand);
-        MinecraftForge.EVENT_BUS.addListener(ClientCameraController::onRenderGuiOverlay);
     }
 }
